@@ -1,0 +1,8 @@
+{
+  "name": "Remix NitePlay",
+  "description": "A premium, mobile-first adult video streaming experience featuring intuitive navigation, personalized history, and responsive design.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
