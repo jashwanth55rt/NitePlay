@@ -5,7 +5,9 @@ import {
   formatViews,
   generateUniqueVideoPoster,
 } from './player-utils';
+import { isAllowedExternalUrl } from './security';
 export type { VideoItem };
+
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const COOKIES = 'cookie_accept_v2=%7B%22e%22%3A1%2C%22f%22%3A1%2C%22t%22%3A1%2C%22a%22%3A1%7D; age_confirmed=1';
@@ -450,15 +452,18 @@ export async function fetchVideos(options: {
   if (type === 'newest') {
     url1 = page > 1 ? `https://xhamster.com/newest/${page}` : 'https://xhamster.com/newest';
     url2 = `https://xhamster.com/newest/${page + 1}`;
-  } else if (type === 'best' || type === 'trending') {
+  } else if (type === 'best') {
     url1 = page > 1 ? `https://xhamster.com/best/${page}` : 'https://xhamster.com/best';
     url2 = `https://xhamster.com/best/${page + 1}`;
+  } else if (type === 'trending') {
+    url1 = page > 1 ? `https://xhamster.com/search/trending/${page}` : 'https://xhamster.com/search/trending';
+    url2 = `https://xhamster.com/search/trending/${page + 1}`;
   } else if (type === 'category' && category) {
     url1 = page > 1 ? `https://xhamster.com/search/${encodeURIComponent(category)}/${page}?quality=720p` : `https://xhamster.com/search/${encodeURIComponent(category)}?quality=720p`;
     url2 = `https://xhamster.com/search/${encodeURIComponent(category)}/${page + 1}?quality=720p`;
   } else if (page > 1) {
-    url1 = `https://xhamster.com/search/trending/${page}`;
-    url2 = `https://xhamster.com/search/trending/${page + 1}`;
+    url1 = `https://xhamster.com/best/${page}`;
+    url2 = `https://xhamster.com/best/${page + 1}`;
   }
 
   const fetchOptions = {
@@ -468,6 +473,7 @@ export async function fetchVideos(options: {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
     },
+    signal: AbortSignal.timeout(10000),
     next: { revalidate: 300 },
   };
 
@@ -498,7 +504,7 @@ export async function fetchVideos(options: {
       return combined;
     }
 
-    // Merge with SEED_VIDEOS to ensure plenty of unique cards
+    // Merge with SEED_VIDEOS as graceful fallback
     for (const s of SEED_VIDEOS) {
       if (!seen.has(s.id) && !seen.has(s.thumbnail)) {
         seen.add(s.id);
@@ -516,6 +522,7 @@ export async function fetchVideos(options: {
 
 /**
  * Searches xHamster videos with live filters and pagination.
+ * Does not silently dump unrelated videos when searches yield 0 results.
  */
 export async function searchVideosScraper(params: {
   query?: string;
@@ -546,18 +553,20 @@ export async function searchVideosScraper(params: {
         'Cookie': COOKIES,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
+      signal: AbortSignal.timeout(10000),
       next: { revalidate: 180 },
     });
 
     if (!res.ok) {
       console.warn(`Search request status ${res.status} for ${searchUrl}`);
+      // Only match seeds that genuinely match search query
       const filteredSeed = SEED_VIDEOS.filter(v =>
         v.title.toLowerCase().includes(rawQuery.toLowerCase()) ||
         v.categories?.some(c => c.toLowerCase().includes(rawQuery.toLowerCase()))
       );
       return {
-        videos: filteredSeed.length > 0 ? filteredSeed : SEED_VIDEOS,
-        total: 50,
+        videos: filteredSeed,
+        total: filteredSeed.length,
         page,
       };
     }
@@ -565,22 +574,40 @@ export async function searchVideosScraper(params: {
     const html = await res.text();
     const videos = parseCardsFromHtml(html);
 
+    if (videos.length === 0) {
+      // Check seeds if query genuinely matches
+      const filteredSeed = SEED_VIDEOS.filter(v =>
+        v.title.toLowerCase().includes(rawQuery.toLowerCase()) ||
+        v.categories?.some(c => c.toLowerCase().includes(rawQuery.toLowerCase()))
+      );
+      return {
+        videos: filteredSeed,
+        total: filteredSeed.length,
+        page,
+      };
+    }
+
     return {
-      videos: videos.length > 0 ? videos : SEED_VIDEOS,
-      total: videos.length > 0 ? 240 : SEED_VIDEOS.length,
+      videos,
+      total: videos.length * 10,
       page,
     };
   } catch (err) {
     console.error('Error in searchVideosScraper:', err);
+    const filteredSeed = SEED_VIDEOS.filter(v =>
+      v.title.toLowerCase().includes(rawQuery.toLowerCase()) ||
+      v.categories?.some(c => c.toLowerCase().includes(rawQuery.toLowerCase()))
+    );
     return {
-      videos: SEED_VIDEOS,
-      total: SEED_VIDEOS.length,
+      videos: filteredSeed,
+      total: filteredSeed.length,
       page,
     };
   }
 }
 
 /**
+
  * Fetches rich details for a specific video including authorized .m3u8 and .mp4 stream links.
  */
 export async function getVideoDetails(videoIdentifier: string): Promise<VideoDetails | null> {
@@ -591,6 +618,10 @@ export async function getVideoDetails(videoIdentifier: string): Promise<VideoDet
 
   const matchedSeed = SEED_VIDEOS.find(v => v.id === videoIdentifier || targetUrl.includes(v.id));
 
+  if (!isAllowedExternalUrl(targetUrl)) {
+    return matchedSeed ? { ...matchedSeed, relatedVideos: SEED_VIDEOS.filter(v => v.id !== matchedSeed.id) } : SEED_VIDEOS[0];
+  }
+
   try {
     const res = await fetch(targetUrl, {
       headers: {
@@ -598,8 +629,10 @@ export async function getVideoDetails(videoIdentifier: string): Promise<VideoDet
         'Cookie': COOKIES,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
+      signal: AbortSignal.timeout(10000),
       next: { revalidate: 600 },
     });
+
 
     if (!res.ok) {
       console.warn(`Video details fetch returned status ${res.status} for ${targetUrl}`);

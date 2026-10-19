@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Search, X, SlidersHorizontal, Loader2, AlertCircle } from 'lucide-react';
-import { VideoItem } from '@/lib/player-utils';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Search, X, SlidersHorizontal, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { VideoItem, deduplicateVideos } from '@/lib/player-utils';
 import { POPULAR_CATEGORIES } from '@/lib/scraper';
 import VideoCard from './VideoCard';
 
@@ -31,58 +31,110 @@ export default function SearchFilterDrawer({
   const [page, setPage] = useState<number>(1);
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  const [totalCount, setTotalCount] = useState<number>(0);
 
-  const executeSearch = useCallback(
-    async (
-      q: string,
-      p: number,
-      cat: string,
-      sort: string,
-      qual: string,
-      dur: string,
-      append = false
-    ) => {
+  // Request race-condition counter
+  const requestSeqRef = useRef<number>(0);
+
+  const executeSearch = async (
+    q: string,
+    p: number,
+    cat: string,
+    sort: string,
+    qual: string,
+    dur: string,
+    append = false
+  ) => {
+    const currentSeq = ++requestSeqRef.current;
+    if (append) {
+      setLoadingMore(true);
+    } else {
       setLoading(true);
-      setHasSearched(true);
-      try {
-        const params = new URLSearchParams();
-        if (q.trim()) params.set('q', q.trim());
-        if (cat) params.set('category', cat);
-        if (sort) params.set('sort', sort);
-        if (qual) params.set('quality', qual);
-        if (dur) params.set('minDuration', dur);
-        params.set('page', p.toString());
-
-        const res = await fetch(`/api/search?${params.toString()}`);
-        const data = await res.json();
-        if (data.success && data.videos) {
-          if (append) {
-            setVideos((prev) => [...prev, ...data.videos]);
-          } else {
-            setVideos(data.videos);
-          }
-        }
-      } catch (err) {
-        console.error('Search failed:', err);
-      } finally {
-        setLoading(false);
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    if (initialQuery) {
-      executeSearch(initialQuery, 1, category, sortBy, quality, minDuration);
+      setError(null);
     }
-  }, [initialQuery, executeSearch, category, sortBy, quality, minDuration]);
+    setHasSearched(true);
+
+    try {
+      const params = new URLSearchParams();
+      if (q.trim()) params.set('q', q.trim());
+      if (cat) params.set('category', cat);
+      if (sort) params.set('sort', sort);
+      if (qual) params.set('quality', qual);
+      if (dur) params.set('minDuration', dur);
+      params.set('page', p.toString());
+
+      const res = await fetch(`/api/search?${params.toString()}`);
+      const data = await res.json();
+
+      // Prevent out-of-order responses from overwriting newer searches
+      if (currentSeq !== requestSeqRef.current) return;
+
+      if (data.success && Array.isArray(data.videos)) {
+        setTotalCount(data.total || data.videos.length);
+        if (append) {
+          setVideos((prev) => deduplicateVideos([...prev, ...data.videos]));
+        } else {
+          setVideos(deduplicateVideos(data.videos));
+        }
+      } else {
+        if (!append) {
+          setVideos([]);
+          setTotalCount(0);
+        }
+        if (data.error) setError(data.error);
+      }
+    } catch (err: any) {
+      if (currentSeq === requestSeqRef.current) {
+        console.error('Search request error:', err);
+        setError('Failed to reach search service. Please check connection and retry.');
+      }
+    } finally {
+      if (currentSeq === requestSeqRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  };
+
+  const [prevInitialQuery, setPrevInitialQuery] = useState(initialQuery);
+  if (initialQuery !== prevInitialQuery) {
+    setPrevInitialQuery(initialQuery);
+    setQuery(initialQuery);
+    setPage(1);
+    setError(null);
+  }
+
+  // Execute search when initialQuery changes
+  useEffect(() => {
+    if (!initialQuery) return;
+    const timer = setTimeout(() => {
+      executeSearch(initialQuery, 1, category, sortBy, quality, minDuration, false);
+    }, 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialQuery]);
+
+
+
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setPage(1);
-    executeSearch(query, 1, category, sortBy, quality, minDuration);
+    executeSearch(query, 1, category, sortBy, quality, minDuration, false);
+  };
+
+  const handleFilterChange = (
+    newCategory = category,
+    newSort = sortBy,
+    newQuality = quality,
+    newDuration = minDuration
+  ) => {
+    setPage(1);
+    executeSearch(query, 1, newCategory, newSort, newQuality, newDuration, false);
   };
 
   const handleLoadMore = () => {
@@ -142,7 +194,7 @@ export default function SearchFilterDrawer({
           {/* Close Search */}
           <button
             onClick={onClose}
-            className="min-h-[48px] min-w-[48px] p-2.5 rounded-2xl bg-[#17171D] hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 flex items-center justify-center transition-colors focus:outline-none"
+            className="min-h-[48px] min-w-[48px] p-2.5 rounded-2xl bg-[#17171D] hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
             aria-label="Close Search"
           >
             <X className="w-5 h-5" />
@@ -159,7 +211,11 @@ export default function SearchFilterDrawer({
               </label>
               <select
                 value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSortBy(val);
+                  handleFilterChange(category, val, quality, minDuration);
+                }}
                 className="w-full bg-[#0B0B0F] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#E50914]"
               >
                 <option value="best">Most Relevant / Best</option>
@@ -176,7 +232,11 @@ export default function SearchFilterDrawer({
               </label>
               <select
                 value={quality}
-                onChange={(e) => setQuality(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setQuality(val);
+                  handleFilterChange(category, sortBy, val, minDuration);
+                }}
                 className="w-full bg-[#0B0B0F] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#E50914]"
               >
                 <option value="720p">HD (720p+)</option>
@@ -192,7 +252,11 @@ export default function SearchFilterDrawer({
               </label>
               <select
                 value={minDuration}
-                onChange={(e) => setMinDuration(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setMinDuration(val);
+                  handleFilterChange(category, sortBy, quality, val);
+                }}
                 className="w-full bg-[#0B0B0F] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#E50914]"
               >
                 <option value="">Any Length</option>
@@ -210,7 +274,11 @@ export default function SearchFilterDrawer({
               </label>
               <select
                 value={category}
-                onChange={(e) => setCategory(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCategory(val);
+                  handleFilterChange(val, sortBy, quality, minDuration);
+                }}
                 className="w-full bg-[#0B0B0F] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#E50914]"
               >
                 <option value="">All Categories</option>
@@ -224,8 +292,25 @@ export default function SearchFilterDrawer({
           </div>
         )}
 
+        {/* Error message banner */}
+        {error && (
+          <div className="mb-6 p-4 rounded-xl bg-red-950/40 border border-red-800 text-xs text-red-300 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <span>{error}</span>
+            </div>
+            <button
+              onClick={() => executeSearch(query, 1, category, sortBy, quality, minDuration, false)}
+              className="text-xs font-bold text-white hover:underline flex items-center gap-1"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Retry</span>
+            </button>
+          </div>
+        )}
+
         {/* Search Results Area */}
-        {loading && videos.length === 0 ? (
+        {loading ? (
           <div className="flex-1 flex flex-col items-center justify-center py-20 text-slate-400">
             <Loader2 className="w-10 h-10 text-[#E50914] animate-spin mb-3" />
             <p className="text-sm font-medium">Searching live streaming catalog...</p>
@@ -257,10 +342,10 @@ export default function SearchFilterDrawer({
             <div className="flex justify-center pb-12">
               <button
                 onClick={handleLoadMore}
-                disabled={loading}
+                disabled={loadingMore}
                 className="min-h-[48px] px-8 py-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-semibold text-sm border border-white/15 transition-all flex items-center gap-2 focus:outline-none disabled:opacity-50"
               >
-                {loading && <Loader2 className="w-4 h-4 animate-spin text-[#E50914]" />}
+                {loadingMore && <Loader2 className="w-4 h-4 animate-spin text-[#E50914]" />}
                 <span>Load More Videos (Page {page + 1})</span>
               </button>
             </div>

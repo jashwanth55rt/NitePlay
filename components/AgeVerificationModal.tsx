@@ -1,22 +1,40 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { ShieldAlert, AlertTriangle, CheckCircle, ExternalLink } from 'lucide-react';
+import React, { useState, useSyncExternalStore } from 'react';
+import { ShieldAlert, CheckCircle } from 'lucide-react';
 
 interface AgeVerificationModalProps {
   onVerified: () => void;
 }
 
+function subscribeStorage(callback: () => void) {
+  if (typeof window === 'undefined') return () => {};
+  window.addEventListener('storage', callback);
+  return () => window.removeEventListener('storage', callback);
+}
+
+function getAgeVerifiedSnapshot() {
+  if (typeof window === 'undefined') return false;
+  return (
+    localStorage.getItem('niteplay_age_verified') === 'true' ||
+    sessionStorage.getItem('niteplay_age_verified') === 'true'
+  );
+}
+
+function getServerSnapshot() {
+  return true; // Match SSR to avoid hydration mismatch
+}
+
 export default function AgeVerificationModal({ onVerified }: AgeVerificationModalProps) {
-  const [isOpen, setIsOpen] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('niteplay_age_verified');
-      const session = sessionStorage.getItem('niteplay_age_verified');
-      return !stored && !session;
-    }
-    return false;
-  });
+  const isStoredVerified = useSyncExternalStore(
+    subscribeStorage,
+    getAgeVerifiedSnapshot,
+    getServerSnapshot
+  );
+  const [dismissed, setDismissed] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+
+  const isOpen = !isStoredVerified && !dismissed;
 
   const handleConfirm = () => {
     if (rememberMe) {
@@ -24,16 +42,16 @@ export default function AgeVerificationModal({ onVerified }: AgeVerificationModa
     } else {
       sessionStorage.setItem('niteplay_age_verified', 'true');
     }
-    setIsOpen(false);
+    setDismissed(true);
     onVerified();
   };
 
   const handleExit = () => {
-    // Redirect to safe non-adult site
     window.location.href = 'https://www.google.com';
   };
 
   if (!isOpen) return null;
+
 
   return (
     <div

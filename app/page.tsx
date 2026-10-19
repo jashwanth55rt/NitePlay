@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Header from '@/components/Header';
 import HeroBanner from '@/components/HeroBanner';
 import HorizontalSlider from '@/components/HorizontalSlider';
@@ -16,24 +16,18 @@ import {
   WatchHistoryEntry,
   updateHistoryList,
   getContinueWatchingList,
+  deduplicateVideos,
 } from '@/lib/player-utils';
 import { SEED_VIDEOS, POPULAR_CATEGORIES } from '@/lib/scraper';
 import { Loader2, Flame, Sparkles, RefreshCw, Layers } from 'lucide-react';
 
 export default function HomePage() {
-  const [isAgeVerified, setIsAgeVerified] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      return (
-        localStorage.getItem('niteplay_age_verified') === 'true' ||
-        sessionStorage.getItem('niteplay_age_verified') === 'true'
-      );
-    }
-    return false;
-  });
+  const [isAgeVerified, setIsAgeVerified] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'trending' | 'categories' | 'library'>('home');
 
+
+
   // Video feeds
-  const [featuredVideo, setFeaturedVideo] = useState<VideoItem>(SEED_VIDEOS[0]);
   const [trendingVideos, setTrendingVideos] = useState<VideoItem[]>([]);
   const [newestVideos, setNewestVideos] = useState<VideoItem[]>([]);
   const [bestVideos, setBestVideos] = useState<VideoItem[]>([]);
@@ -80,34 +74,39 @@ export default function HomePage() {
     return true;
   });
 
-  // Fetch initial home, trending, and newest video feeds
+  // Fetch initial trending, newest, and top-rated feeds
   useEffect(() => {
     let isSubscribed = true;
 
     async function loadFeeds() {
       setLoadingFeeds(true);
       try {
-        const [homeRes, newestRes, bestRes] = await Promise.all([
-          fetch('/api/videos?type=home'),
+        const [trendingRes, newestRes, bestRes] = await Promise.all([
+          fetch('/api/videos?type=trending'),
           fetch('/api/videos?type=newest'),
           fetch('/api/videos?type=best'),
         ]);
 
-        const [homeData, newestData, bestData] = await Promise.all([
-          homeRes.json(),
+        const [trendingData, newestData, bestData] = await Promise.all([
+          trendingRes.json(),
           newestRes.json(),
           bestRes.json(),
         ]);
 
         if (isSubscribed) {
-          const homeList = homeData.videos?.length ? homeData.videos : SEED_VIDEOS;
-          const newestList = newestData.videos?.length ? newestData.videos : SEED_VIDEOS.slice(1);
-          const bestList = bestData.videos?.length ? bestData.videos : SEED_VIDEOS;
+          const trendingList = trendingData.videos?.length
+            ? deduplicateVideos(trendingData.videos)
+            : SEED_VIDEOS;
+          const newestList = newestData.videos?.length
+            ? deduplicateVideos(newestData.videos)
+            : SEED_VIDEOS.slice(1);
+          const bestList = bestData.videos?.length
+            ? deduplicateVideos(bestData.videos)
+            : SEED_VIDEOS;
 
-          setTrendingVideos(homeList);
+          setTrendingVideos(trendingList);
           setNewestVideos(newestList);
           setBestVideos(bestList);
-          setFeaturedVideo(homeList[0] || SEED_VIDEOS[0]);
         }
       } catch (err) {
         console.error('Failed to load initial video feeds:', err);
@@ -137,7 +136,7 @@ export default function HomePage() {
         const res = await fetch(`/api/videos?type=category&category=${encodeURIComponent(selectedCategory!)}`);
         const data = await res.json();
         if (isSubscribed && data.success && data.videos) {
-          setCategoryVideos(data.videos);
+          setCategoryVideos(deduplicateVideos(data.videos));
         }
       } catch (e) {
         console.error('Failed to load category videos:', e);
@@ -203,6 +202,23 @@ export default function HomePage() {
     } catch (e) {}
   };
 
+  const handleClearFavorites = () => {
+    setFavorites([]);
+    try {
+      localStorage.removeItem('niteplay_favorites');
+    } catch (e) {}
+  };
+
+  const handleClearAllData = () => {
+    setFavorites([]);
+    setWatchHistory([]);
+    setIsHistoryEnabled(true);
+    try {
+      localStorage.clear();
+      window.location.reload();
+    } catch (e) {}
+  };
+
   const handleToggleHistoryEnabled = () => {
     setIsHistoryEnabled((prev) => {
       const next = !prev;
@@ -261,6 +277,8 @@ export default function HomePage() {
             onSelectVideo={handlePlayVideo}
             onRemoveFavorite={handleToggleFavorite}
             onClearHistory={handleClearHistory}
+            onClearFavorites={handleClearFavorites}
+            onClearAllData={handleClearAllData}
             isHistoryEnabled={isHistoryEnabled}
             onToggleHistoryEnabled={handleToggleHistoryEnabled}
           />
@@ -279,7 +297,7 @@ export default function HomePage() {
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {bestVideos.map((vid) => (
+              {trendingVideos.map((vid) => (
                 <VideoCard
                   key={vid.id}
                   video={vid}
@@ -352,15 +370,13 @@ export default function HomePage() {
         ) : (
           /* HOME TAB */
           <div>
-            {/* Hero Featured Video Spotlight */}
-            {featuredVideo && (
-              <HeroBanner
-                video={featuredVideo}
-                onPlay={handlePlayVideo}
-                isFavorite={favoritesSet.has(featuredVideo.id)}
-                onToggleFavorite={handleToggleFavorite}
-              />
-            )}
+            {/* Hero Featured Carousel Spotlight (5-8 unique items) */}
+            <HeroBanner
+              videos={trendingVideos.length > 0 ? trendingVideos : SEED_VIDEOS}
+              onPlay={handlePlayVideo}
+              isFavorite={(id) => favoritesSet.has(id)}
+              onToggleFavorite={handleToggleFavorite}
+            />
 
             {/* Continue Watching Row (if user has active history) */}
             {continueWatchingList.length > 0 && (
@@ -433,16 +449,16 @@ export default function HomePage() {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-xl sm:text-2xl font-bold text-white">
-                    Recommended For You
+                    Curated Selection: Highly Rated Releases
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Curated selection based on popular studio and creator releases.
+                    Verified studio scenes and viewer-rated favorites.
                   </p>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                {trendingVideos.slice(0, 12).map((vid) => (
+                {bestVideos.slice(0, 12).map((vid) => (
                   <VideoCard
                     key={vid.id}
                     video={vid}

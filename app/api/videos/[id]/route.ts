@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getVideoDetails } from '@/lib/scraper';
+import { isAllowedExternalUrl } from '@/lib/security';
 
 export async function GET(
   req: NextRequest,
@@ -10,8 +11,19 @@ export async function GET(
     const { searchParams } = new URL(req.url);
     const videoUrl = searchParams.get('url') || undefined;
 
+    // Security: Validate external URL against SSRF
+    if (videoUrl) {
+      if (!isAllowedExternalUrl(videoUrl)) {
+        return NextResponse.json(
+          { success: false, error: 'Disallowed or unsafe video URL' },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Sanitize identifier
     const identifier = videoUrl || id;
-    if (!identifier) {
+    if (!identifier || typeof identifier !== 'string') {
       return NextResponse.json({ success: false, error: 'Missing video ID or URL' }, { status: 400 });
     }
 
@@ -32,3 +44,4 @@ export async function GET(
     );
   }
 }
+

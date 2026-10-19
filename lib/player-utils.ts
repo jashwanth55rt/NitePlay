@@ -216,3 +216,56 @@ export function generateUniqueVideoPoster(id: string, title: string): string {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
+export const SUPPORTED_PLAYBACK_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
+
+/**
+ * Validates whether a saved playback position is worth resuming.
+ * Skips the first 5 seconds or if video is within 15 seconds of the end or >= 95% watched.
+ */
+export function isValidResumePosition(currentTime: number, duration: number): boolean {
+  if (!duration || duration <= 20 || !currentTime || currentTime < 5) return false;
+  if (currentTime >= duration - 15) return false;
+  const pct = (currentTime / duration) * 100;
+  return pct < 95;
+}
+
+/**
+ * Safely clamps seek target within valid media boundaries.
+ */
+export function clampTime(target: number, duration: number): number {
+  if (isNaN(target) || target < 0) return 0;
+  if (isNaN(duration) || duration <= 0) return target;
+  return Math.min(duration, Math.max(0, target));
+}
+
+/**
+ * Deduplicates video items by stable ID and thumbnail URL.
+ */
+export function deduplicateVideos(videos: VideoItem[]): VideoItem[] {
+  if (!Array.isArray(videos)) return [];
+  const seenIds = new Set<string>();
+  const seenThumbs = new Set<string>();
+  const result: VideoItem[] = [];
+
+  for (const v of videos) {
+    if (!v || !v.id) continue;
+    if (seenIds.has(v.id)) continue;
+    if (v.thumbnail && seenThumbs.has(v.thumbnail)) continue;
+
+    seenIds.add(v.id);
+    if (v.thumbnail) seenThumbs.add(v.thumbnail);
+    result.push(v);
+  }
+  return result;
+}
+
+/**
+ * Calculates current buffered percentage relative to total duration.
+ */
+export function calculateBufferedPercent(bufferedEnd: number, duration: number): number {
+  if (!duration || duration <= 0 || !bufferedEnd || bufferedEnd <= 0) return 0;
+  const pct = (bufferedEnd / duration) * 100;
+  return Math.min(100, Math.max(0, Math.round(pct * 10) / 10));
+}
+
+

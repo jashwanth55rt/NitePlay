@@ -3,11 +3,12 @@
  * Restricts outbound server-side fetching strictly to authorized video and CDN hosts.
  */
 
-const ALLOWED_HOSTNAMES = [
+const ALLOWED_HOSTNAMES = new Set([
   'xhamster.com',
   'www.xhamster.com',
   'xhcdn.com',
-];
+  'picsum.photos',
+]);
 
 const ALLOWED_HOSTNAME_SUFFIXES = [
   '.xhamster.com',
@@ -25,6 +26,8 @@ const DISALLOWED_IP_PATTERNS = [
   /^::1$/,
   /^fc00:/i,
   /^fe80:/i,
+  /^0x/i, // Hex-encoded IP
+  /^[0-9]+$/, // Dword integer IP
 ];
 
 /**
@@ -42,6 +45,11 @@ export function isAllowedExternalUrl(urlString: string): boolean {
       return false;
     }
 
+    // Only allow default HTTPS port
+    if (parsed.port && parsed.port !== '443') {
+      return false;
+    }
+
     const hostname = parsed.hostname.toLowerCase();
 
     // Block private, loopback, and metadata IPs
@@ -51,12 +59,35 @@ export function isAllowedExternalUrl(urlString: string): boolean {
       }
     }
 
+    // Disallow userinfo (e.g., https://user:pass@evil.com)
+    if (parsed.username || parsed.password) {
+      return false;
+    }
+
     // Check against authorized domains
-    const isExplicitMatch = ALLOWED_HOSTNAMES.includes(hostname);
+    const isExplicitMatch = ALLOWED_HOSTNAMES.has(hostname);
     const isSuffixMatch = ALLOWED_HOSTNAME_SUFFIXES.some(suffix => hostname.endsWith(suffix));
 
     return isExplicitMatch || isSuffixMatch;
-  } catch (err) {
+  } catch {
     return false;
   }
 }
+
+/**
+ * Allowed MIME types for proxied images.
+ */
+export const ALLOWED_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/avif',
+  'image/gif',
+  'image/svg+xml',
+]);
+
+/**
+ * Maximum permitted response size for image proxy (5MB).
+ */
+export const MAX_IMAGE_PROXY_BYTES = 5 * 1024 * 1024;
+

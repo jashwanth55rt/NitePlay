@@ -11,7 +11,12 @@ import {
   shouldApplyCssRotation,
   getOrientationLockLabel,
   generateUniqueVideoPoster,
+  isValidResumePosition,
+  clampTime,
+  deduplicateVideos,
+  calculateBufferedPercent,
 } from './player-utils.ts';
+
 import type { VideoItem, WatchHistoryEntry } from './player-utils.ts';
 
 test('formatDuration formats seconds into mm:ss or hh:mm:ss correctly', () => {
@@ -122,4 +127,37 @@ test('generateUniqueVideoPoster generates unique non-empty SVG data URIs for dif
   assert.ok(p2.startsWith('data:image/svg+xml'));
   assert.notEqual(p1, p2, 'Different video IDs must generate distinct posters');
 });
+
+test('isValidResumePosition only accepts meaningful in-progress playback positions', () => {
+  assert.equal(isValidResumePosition(2, 600), false); // too early
+  assert.equal(isValidResumePosition(120, 600), true); // valid mid-point
+  assert.equal(isValidResumePosition(590, 600), false); // too close to end (within 15s)
+  assert.equal(isValidResumePosition(580, 600), false); // >= 95%
+  assert.equal(isValidResumePosition(50, 10), false); // invalid duration
+});
+
+test('clampTime clamps within range 0 to duration', () => {
+  assert.equal(clampTime(-10, 600), 0);
+  assert.equal(clampTime(350, 600), 350);
+  assert.equal(clampTime(700, 600), 600);
+});
+
+test('deduplicateVideos removes duplicate videos by id and thumbnail', () => {
+  const v1: VideoItem = { id: '1', title: 'A', url: '', thumbnail: 't1' };
+  const v2: VideoItem = { id: '1', title: 'A duplicate', url: '', thumbnail: 't2' };
+  const v3: VideoItem = { id: '2', title: 'B', url: '', thumbnail: 't1' }; // duplicate thumb
+  const v4: VideoItem = { id: '3', title: 'C', url: '', thumbnail: 't3' };
+
+  const deduped = deduplicateVideos([v1, v2, v3, v4]);
+  assert.equal(deduped.length, 2);
+  assert.equal(deduped[0].id, '1');
+  assert.equal(deduped[1].id, '3');
+});
+
+test('calculateBufferedPercent computes accurate bounded percent', () => {
+  assert.equal(calculateBufferedPercent(30, 60), 50);
+  assert.equal(calculateBufferedPercent(0, 60), 0);
+  assert.equal(calculateBufferedPercent(100, 60), 100);
+});
+
 
